@@ -1,6 +1,4 @@
-# object-tracking-yolov8-deep-sort
-
-Yolov8 object detection + deep sort object tracking !
+# Siamese Embedding Model for DeepSORT
 
 ## requirements
 
