@@ -76,7 +76,9 @@ class ImageEncoder(object):
         with tf.compat.v1.gfile.GFile(checkpoint_filename, "rb") as file_handle:
             graph_def = tf.compat.v1.GraphDef()
             graph_def.ParseFromString(file_handle.read())
-        tf.import_graph_def(graph_def, name="net")
+        # name="" preserves the original node names from the .pb so that
+        # input_name="images" resolves to "images:0" (not "net/images:0").
+        tf.import_graph_def(graph_def, name="")
         self.input_var = tf.compat.v1.get_default_graph().get_tensor_by_name(
             "%s:0" % input_name)
         self.output_var = tf.compat.v1.get_default_graph().get_tensor_by_name(
