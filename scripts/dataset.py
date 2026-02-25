@@ -324,13 +324,16 @@ class PKSampler:
 
     # ------------------------------------------------------------------
 
-    def sample_batch(self) -> Tuple[np.ndarray, np.ndarray]:
+    def sample_batch(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return one PK batch.
 
         Returns
         -------
-        images : (P*K, H, W, 3) float32  raw BGR [0, 255]
-        labels : (P*K,)         int32    consecutive labels 0..P-1
+        images        : (P*K, H, W, 3) float32  raw BGR [0, 255]
+        labels        : (P*K,)         int32    consecutive labels 0..P-1
+                        (used by triplet loss for same/different-class masks)
+        global_labels : (P*K,)         int32    indices into self.class_ids
+                        (used by classification head for cross-entropy loss)
         """
         n_cls = len(self.class_ids)
         P = min(self.P, n_cls)
@@ -338,6 +341,7 @@ class PKSampler:
 
         images: List[np.ndarray] = []
         labels: List[int] = []
+        global_labels: List[int] = []
 
         for lbl, cidx in enumerate(chosen):
             paths = self.data[self.class_ids[cidx]]
@@ -350,8 +354,13 @@ class PKSampler:
                     img = self.augment_fn(img)
                 images.append(img.astype(np.float32))
                 labels.append(lbl)
+                global_labels.append(int(cidx))
 
-        return np.stack(images), np.array(labels, dtype=np.int32)
+        return (
+            np.stack(images),
+            np.array(labels, dtype=np.int32),
+            np.array(global_labels, dtype=np.int32),
+        )
 
     # ------------------------------------------------------------------
 
@@ -360,7 +369,7 @@ class PKSampler:
 
         Yields
         ------
-        (images, labels) tuples – see sample_batch()
+        (images, labels, global_labels) tuples – see sample_batch()
         """
         n = steps if steps is not None else len(self)
         for _ in range(n):

@@ -33,7 +33,7 @@ class FeatureExtractorEvaluator:
             raise ValueError(f"Cannot read image: {image_path}")
         img = cv2.resize(img, target_size)  # width, height
 
-        img = img.astype(np.float32) / 255.0   # ✅ must match training
+        img = img.astype(np.float32)    # ✅ must match training
         return np.expand_dims(img, axis=0)
     
     def get_embedding(self, image_path):
@@ -342,10 +342,10 @@ class FeatureExtractorEvaluator:
 # Main execution
 if __name__ == "__main__":
     # Configuration
-    MODEL_PATH = "./output/frozen_model.pb" #"./output/frozen_model_cnn_highstep.pb"  # Your model "./model_feature_extractor/mars-small128.pb" "./model_feature_extractor/frozen_model.pb" "./output/frozen_model_mobnetv1.pb"
-    DATASET_PATH = "./dataset_siam_test"  # Your dataset path
+    MODEL_PATH = "./runs/turkey_reid/best_model.pb" #"./runs/turkey_reid/best_model.pb" #"./output/frozen_model.pb" #"./output/frozen_model_cnn_highstep.pb"  # Your model "./model_feature_extractor/mars-small128.pb" "./model_feature_extractor/frozen_model.pb" "./output/frozen_model_mobnetv1.pb"
+    DATASET_PATH = "./dataset_siam_21"  # Your dataset path
     INPUT_TENSOR = "images:0"  # Update based on your model
-    OUTPUT_TENSOR = "Identity:0" # Update based on your model "Identity:0" "features:0"
+    OUTPUT_TENSOR = "features:0" # Update based on your model "Identity:0" "features:0"
     
     # Create evaluator
     print("Loading model...")

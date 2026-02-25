@@ -57,13 +57,13 @@ def test_mars_model(model_path, img1_path, img2_path):
     
     # Get tensors (update names if different)
     input_tensor = graph.get_tensor_by_name("images:0")
-    output_tensor = graph.get_tensor_by_name("Identity:0") # "features:0" "Identity:0" for some models
+    output_tensor = graph.get_tensor_by_name("features:0") # "features:0" "Identity:0" for some models
     
     # Preprocess (CRITICAL: BGR, no normalization)
     def load_image(path):
         img = cv2.imread(path)  # Keep BGR
         img = cv2.resize(img, (64, 128))  # Width, Height # 128, 64 for mobnetv1
-        return np.expand_dims(img, axis=0)  # Add batch
+        return np.expand_dims(img.astype(np.float32), axis=0)  # Add batch
     
     img1 = load_image(img1_path)
     img2 = load_image(img2_path)
@@ -81,8 +81,10 @@ def test_mars_model(model_path, img1_path, img2_path):
     return similarity
 
 # Test with obviously different images
-img_same = "./dataset_siam/object_1/frame_100.jpg"  # Two crops of same person        data_mars
-img_diff = "./dataset_siam/object_2/frame_400.jpg"       # Completely different object      data_mars "./dataset_siam/object_1/frame_600.jpg"
+img_same = "./dataset_siam_21/object_7/frame_100.jpg"  # Two crops of same person        data_mars
+img_diff = "./dataset_siam_21/object_127/frame_100.jpg"       # Completely different object      data_mars "./dataset_siam/object_1/frame_600.jpg"
 
-similarity = test_mars_model("./output/frozen_model_cnn.pb", img_same, img_diff)    # "./output/frozen_model.pb" "./model_feature_extractor/frozen_model_mobnetv1.pb"
+
+similarity = test_mars_model("./runs/turkey_reid/best_model.pb", img_same, img_diff)
+#similarity = test_mars_model("./output/frozen_model.pb", img_same, img_diff)    #"./output/frozen_model_cnn.pb" "./output/frozen_model.pb" "./model_feature_extractor/frozen_model_mobnetv1.pb"
 print(f"Cosine similarity: {similarity:.4f}")  # Should be >0.8 for same, <0.3 for different

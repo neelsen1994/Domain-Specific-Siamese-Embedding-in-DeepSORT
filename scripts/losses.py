@@ -108,3 +108,61 @@ def batch_hard_triplet_loss(
     mean_pos    = tf.reduce_sum(hardest_pos * has_pos) / denom
 
     return loss, frac_active, mean_pos
+
+
+def batch_soft_triplet_loss(
+    embeddings: tf.Tensor,
+    labels: tf.Tensor,
+    margin: float = 0.5,
+    squared: bool = False,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Soft-margin batch-hard triplet loss.
+
+    Uses the same hardest-positive / hardest-negative mining as batch-hard,
+    but replaces the hinge  max(0, d_pos - d_neg + margin)  with the smooth
+    soft-plus  log(1 + exp(d_pos - d_neg + margin)).
+
+    Benefits over hard-margin:
+    * Always provides non-zero gradients — avoids the "dead zone" where the
+      model gets no signal once all triplets satisfy the margin.
+    * Much harder to collapse: even when d_pos ≈ d_neg ≈ 0 the loss is
+      log(1 + exp(margin)) > 0 with a non-zero gradient that pushes the
+      model to actually separate the embeddings.
+
+    Parameters / Returns: same as batch_hard_triplet_loss.
+    """
+    dist = pairwise_l2_distance(embeddings, squared=squared)
+
+    labels = tf.cast(tf.reshape(labels, [-1]), tf.int32)
+    N = tf.shape(embeddings)[0]
+
+    labels_row = tf.reshape(labels, [1, -1])
+    labels_col = tf.reshape(labels, [-1, 1])
+
+    pos_mask = tf.equal(labels_col, labels_row)
+    neg_mask = tf.logical_not(pos_mask)
+    eye = tf.eye(N, dtype=tf.bool)
+    valid_pos_mask = tf.logical_and(pos_mask, tf.logical_not(eye))
+
+    hardest_pos = tf.reduce_max(
+        dist * tf.cast(valid_pos_mask, tf.float32), axis=1
+    )
+
+    large = tf.ones_like(dist) * 1e9
+    neg_dist = tf.where(neg_mask, dist, large)
+    hardest_neg = tf.reduce_min(neg_dist, axis=1)
+
+    # Soft-plus instead of hinge — always differentiable
+    per_anchor = tf.math.softplus(hardest_pos - hardest_neg + margin)
+
+    has_pos = tf.cast(tf.reduce_any(valid_pos_mask, axis=1), tf.float32)
+    denom = tf.reduce_sum(has_pos) + 1e-9
+
+    loss = tf.reduce_sum(per_anchor * has_pos) / denom
+    # "active" fraction: triplets where hard-margin would also be > 0
+    frac_active = tf.reduce_sum(
+        tf.cast((hardest_pos - hardest_neg + margin) > 0.0, tf.float32) * has_pos
+    ) / denom
+    mean_pos = tf.reduce_sum(hardest_pos * has_pos) / denom
+
+    return loss, frac_active, mean_pos

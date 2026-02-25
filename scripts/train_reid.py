@@ -68,7 +68,7 @@ from scripts.dataset import (
     load_split_as_arrays,
 )
 from scripts.model import build_embedding_model
-from scripts.losses import batch_hard_triplet_loss
+from scripts.losses import batch_hard_triplet_loss, batch_soft_triplet_loss
 from scripts.augmentation import ReIDAugmentation
 from scripts.metrics import compute_rank1
 
@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
 
     # --- PK Sampling ---
     g = p.add_argument_group("PK Sampling")
-    g.add_argument("--P", type=int, default=16,
+    g.add_argument("--P", type=int, default=8,
                    help="Identities per batch.")
     g.add_argument("--K", type=int, default=4,
                    help="Images per identity per batch.  batch_size = P * K.")
@@ -116,9 +116,17 @@ def parse_args() -> argparse.Namespace:
     # --- Training ---
     g = p.add_argument_group("Training")
     g.add_argument("--epochs",       type=int,   default=150)
-    g.add_argument("--lr",           type=float, default=1e-3)
-    g.add_argument("--margin",       type=float, default=0.30,
+    g.add_argument("--lr",           type=float, default=3e-4,
+                   help="Peak learning rate (cosine decay after warmup).")
+    g.add_argument("--weight_decay", type=float, default=1e-4,
+                   help="L2 regularisation on Conv/Dense kernels.")
+    g.add_argument("--margin",       type=float, default=0.50,
                    help="Triplet loss margin.")
+    g.add_argument("--loss_type",    default="soft", choices=["hard", "soft"],
+                   help="'soft' uses log(1+exp(·)) instead of hinge max(0,·).")
+    g.add_argument("--id_loss_weight", type=float, default=0.5,
+                   help="Weight of the cross-entropy ID classification loss. "
+                        "Set to 0 to disable the classification head.")
     g.add_argument("--warmup_epochs", type=int,  default=5,
                    help="Linear LR warm-up duration in epochs.")
     g.add_argument("--patience",     type=int,   default=25,
@@ -206,7 +214,10 @@ def export_frozen_pb(model: tf.keras.Model, output_path: str, input_shape: tuple
         tf.TensorSpec([None] + list(input_shape), tf.float32, name="images")
     ])
     def _serving(x: tf.Tensor) -> tf.Tensor:
-        emb = model(x, training=False)
+        out = model(x, training=False)
+        # When a classification head is present the model returns [features, logits];
+        # the .pb export only needs the embedding output.
+        emb = out[0] if isinstance(out, (list, tuple)) else out
         # Explicit identity op ensures the output is named "features" in the graph
         return tf.identity(emb, name="features")
 
@@ -244,7 +255,9 @@ def extract_embeddings(
     embs: List[np.ndarray] = []
     for i in range(0, len(images), batch_size):
         batch = tf.constant(images[i: i + batch_size], dtype=tf.float32)
-        embs.append(model(batch, training=False).numpy())
+        out = model(batch, training=False)
+        emb = out[0] if isinstance(out, (list, tuple)) else out
+        embs.append(emb.numpy())
     return np.concatenate(embs, axis=0)
 
 
@@ -326,11 +339,14 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
     # ------------------------------------------------------------------
     # 3. Model
     # ------------------------------------------------------------------
+    num_classes = len(train_data) if args.id_loss_weight > 0 else None
     model = build_embedding_model(
         input_shape=input_shape,
         embedding_dim=args.embedding_dim,
         num_filters=args.num_filters,
         dropout_rate=args.dropout,
+        num_classes=num_classes,
+        weight_decay=args.weight_decay,
     )
     model.summary(line_length=90)
     print("[train] Trainable params: {:,}".format(model.count_params()))
@@ -362,13 +378,19 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
     log = {"args": vars(args), "epochs": []}
     log_path = str(output_dir / "training_log.json")
 
+    id_loss_active = args.id_loss_weight > 0 and num_classes is not None
+    triplet_fn = batch_soft_triplet_loss if args.loss_type == "soft" else batch_hard_triplet_loss
+
     header = (
         "\n" + "=" * 70 + "\n"
         "Training configuration\n"
         "  Epochs:          {epochs}\n"
         "  Steps/epoch:     {steps}\n"
         "  Batch (P×K):     {P}×{K}={bs}\n"
+        "  Loss type:       {lt}\n"
         "  Triplet margin:  {margin}\n"
+        "  ID loss weight:  {idw} ({nc} classes)\n"
+        "  Weight decay:    {wd}\n"
         "  Peak LR:         {lr}\n"
         "  Warmup epochs:   {wu}\n"
         "  Early-stop pat.: {pat}\n"
@@ -378,7 +400,12 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
         epochs=args.epochs,
         steps=args.steps_per_epoch,
         P=args.P, K=args.K, bs=batch_size,
-        margin=args.margin, lr=args.lr,
+        lt=args.loss_type,
+        margin=args.margin,
+        idw=args.id_loss_weight,
+        nc=num_classes if num_classes else 0,
+        wd=args.weight_decay,
+        lr=args.lr,
         wu=args.warmup_epochs, pat=args.patience,
         aug="off" if args.no_augment else "on",
     )
@@ -388,15 +415,32 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
         t0 = time.time()
         ep_loss, ep_frac, ep_pos = [], [], []
 
-        for images, labels in sampler.epoch_generator(args.steps_per_epoch):
-            images_tf = tf.constant(images, dtype=tf.float32)
-            labels_tf = tf.constant(labels, dtype=tf.int32)
+        for images, labels, global_labels in sampler.epoch_generator(args.steps_per_epoch):
+            images_tf       = tf.constant(images,        dtype=tf.float32)
+            labels_tf       = tf.constant(labels,        dtype=tf.int32)
+            global_labels_tf = tf.constant(global_labels, dtype=tf.int32)
 
             with tf.GradientTape() as tape:
-                embs = model(images_tf, training=True)
-                loss, frac_active, mean_pos = batch_hard_triplet_loss(
+                model_out = model(images_tf, training=True)
+
+                if id_loss_active:
+                    embs, logits = model_out
+                else:
+                    embs = model_out
+
+                trip_loss, frac_active, mean_pos = triplet_fn(
                     embs, labels_tf, margin=args.margin
                 )
+
+                if id_loss_active:
+                    ce_loss = tf.reduce_mean(
+                        tf.keras.losses.sparse_categorical_crossentropy(
+                            global_labels_tf, logits, from_logits=True
+                        )
+                    )
+                    loss = trip_loss + args.id_loss_weight * ce_loss
+                else:
+                    loss = trip_loss
 
             grads = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))

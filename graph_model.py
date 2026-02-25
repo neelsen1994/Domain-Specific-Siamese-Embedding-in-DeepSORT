@@ -98,7 +98,7 @@ def calculate_parameters(graph):
 if __name__ == "__main__":
     # Configuration
     model1_path = "./model_feature_extractor/mars-small128.pb"
-    model2_path = "./output/frozen_model_cnn_highstep.pb"    #"./model_feature_extractor/frozen_model.pb"
+    model2_path = "./runs/turkey_reid/best_model.pb" #"./output/frozen_model_cnn_highstep.pb"    #"./model_feature_extractor/frozen_model.pb"
     image1_path = "./dataset_siam/object_1/frame_100.jpg"
     image2_path = "./dataset_siam/object_2/frame_400.jpg"
 
@@ -116,8 +116,8 @@ if __name__ == "__main__":
     model1 = load_pb_model(model1_path)
     model2 = load_pb_model(model2_path)
 
-    print_graph_details(model2)
-    calculate_parameters(model1)
+    #print_graph_details(model2)
+    #calculate_parameters(model1)
     calculate_parameters(model2)
 
 #    # Preprocess images
