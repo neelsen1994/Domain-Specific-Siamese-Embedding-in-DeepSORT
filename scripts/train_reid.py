@@ -62,7 +62,7 @@ import tensorflow as tf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.dataset import (
     load_dataset_dict,
-    create_split,
+    create_id_split,
     load_split_from_manifest,
     PKSampler,
     load_split_as_arrays,
@@ -250,22 +250,20 @@ def extract_embeddings(
 
 def validate(
     model: tf.keras.Model,
-    train_data: Dict[str, List[str]],
     val_data: Dict[str, List[str]],
     image_size: Tuple[int, int],
     batch_size: int = 64,
 ) -> float:
-    """Rank-1 accuracy: val images as queries, train images as gallery.
+    """Rank-1 accuracy on entirely unseen val identities (leave-one-out).
 
-    The two splits are disjoint by construction, so no self-removal is needed.
+    All val images form both the query set and the gallery.  Each image is
+    used as a query in turn, and its own embedding is excluded from the
+    gallery (remove_self=True).  Because val IDs were never in training,
+    this measures generalisation to discriminate unseen pairs of turkeys.
     """
-    q_imgs, q_lbls, _ = load_split_as_arrays(val_data,   image_size)
-    g_imgs, g_lbls, _ = load_split_as_arrays(train_data, image_size)
-
-    q_embs = extract_embeddings(model, q_imgs, batch_size)
-    g_embs = extract_embeddings(model, g_imgs, batch_size)
-
-    return compute_rank1(q_embs, q_lbls, g_embs, g_lbls, remove_self=False)
+    imgs, lbls, _ = load_split_as_arrays(val_data, image_size)
+    embs = extract_embeddings(model, imgs, batch_size)
+    return compute_rank1(embs, lbls, embs, lbls, remove_self=True)
 
 
 # ===========================================================================
@@ -299,8 +297,8 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
         print("[train] Loading existing manifest: {}".format(manifest_path))
         train_data, val_data, test_data = load_split_from_manifest(manifest_path)
     else:
-        print("[train] Creating new deterministic split ...")
-        train_data, val_data, test_data = create_split(
+        print("[train] Creating new identity split (open-set) ...")
+        train_data, val_data, test_data = create_id_split(
             dataset,
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
@@ -415,8 +413,7 @@ def train(args: argparse.Namespace) -> tf.keras.Model:
         cur_lr    = float(lr_schedule(optimizer.iterations))
 
         # ---- validation rank-1 ----
-        rank1 = validate(model, train_data, val_data, image_size,
-                         batch_size=batch_size)
+        rank1 = validate(model, val_data, image_size, batch_size=batch_size)
 
         improved = rank1 > best_rank1
         if improved:

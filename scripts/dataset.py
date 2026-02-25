@@ -55,7 +55,108 @@ def load_dataset_dict(dataset_path: str) -> Dict[str, List[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Deterministic train / val / test split (by image, within each identity)
+# Deterministic train / val / test split — by IDENTITY (open-set ReID)
+# ---------------------------------------------------------------------------
+
+def create_id_split(
+    dataset: Dict[str, List[str]],
+    train_ratio: float = 0.70,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+    min_images_eval: int = 2,
+    manifest_path: Optional[str] = None,
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], Dict[str, List[str]]]:
+    """Split IDENTITIES into train / val / test groups (open-set evaluation).
+
+    All images of each identity land in exactly one split.  Val and test
+    identities are completely held out from training, so the metric measures
+    whether the embedding generalises to discriminate *any* pair of turkeys,
+    not just the ones seen during training.
+
+    Only identities with >= min_images_eval images are eligible for val/test;
+    identities with fewer images always go to train (they cannot form a
+    meaningful query/gallery pair).
+
+    Parameters
+    ----------
+    dataset          : {class_id: [image_paths]}
+    train_ratio      : target fraction of *identities* for training
+    val_ratio        : target fraction of *identities* for validation
+    seed             : random seed (deterministic)
+    min_images_eval  : minimum images an ID must have to be placed in val/test
+    manifest_path    : if set, save the split manifest to this JSON path
+
+    Returns
+    -------
+    (train_data, val_data, test_data)
+    """
+    rng = random.Random(seed)
+
+    all_ids = sorted(dataset.keys())
+
+    # Separate IDs into those eligible for eval (≥ min_images_eval images)
+    # and those that must stay in train (too few images to form query+gallery)
+    eval_eligible = [i for i in all_ids if len(dataset[i]) >= min_images_eval]
+    train_only    = [i for i in all_ids if len(dataset[i]) <  min_images_eval]
+
+    rng.shuffle(eval_eligible)
+
+    total  = len(all_ids)
+    n_val  = max(1, int(round(total * val_ratio)))
+    n_test = max(1, int(round(total * (1.0 - train_ratio - val_ratio))))
+
+    # Guard: can't exceed the number of eval-eligible IDs
+    n_val  = min(n_val,  len(eval_eligible) // 2)
+    n_test = min(n_test, len(eval_eligible) - n_val)
+
+    val_ids   = eval_eligible[:n_val]
+    test_ids  = eval_eligible[n_val: n_val + n_test]
+    train_ids = eval_eligible[n_val + n_test:] + train_only
+
+    train_data = {i: dataset[i] for i in train_ids}
+    val_data   = {i: dataset[i] for i in val_ids}
+    test_data  = {i: dataset[i] for i in test_ids}
+
+    if manifest_path:
+        os.makedirs(os.path.dirname(os.path.abspath(manifest_path)), exist_ok=True)
+        manifest = {
+            "split_mode": "identity",
+            "seed": seed,
+            "train_ratio": train_ratio,
+            "val_ratio": val_ratio,
+            "min_images_eval": min_images_eval,
+            "splits": {
+                "train": train_data,
+                "val":   val_data,
+                "test":  test_data,
+            },
+        }
+        with open(manifest_path, "w") as fh:
+            json.dump(manifest, fh, indent=2)
+        print("[dataset] Split manifest saved -> {}".format(manifest_path))
+
+    _print_id_split_stats(train_data, val_data, test_data)
+    return train_data, val_data, test_data
+
+
+def _print_id_split_stats(
+    train: Dict[str, List[str]],
+    val: Dict[str, List[str]],
+    test: Dict[str, List[str]],
+) -> None:
+    def fmt(d: Dict[str, List[str]]) -> str:
+        n_ids  = len(d)
+        n_imgs = sum(len(v) for v in d.values())
+        return "{} IDs / {} imgs".format(n_ids, n_imgs)
+
+    print("[dataset] Identity split ->  train: {}  |  val: {}  |  test: {}".format(
+        fmt(train), fmt(val), fmt(test)
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Deterministic train / val / test split — by IMAGE within each identity
+# (kept for reference; not recommended for open-set ReID evaluation)
 # ---------------------------------------------------------------------------
 
 def create_split(

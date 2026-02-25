@@ -135,3 +135,5 @@ output/
 frozen_model/
 model_feature_extractor/
 model_obj_detector/
+runs/
+Notes
