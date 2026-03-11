@@ -11,10 +11,11 @@ class Tracker:
     tracks = None
 
     def __init__(self):
-        max_cosine_distance = 0.08
-        nn_budget = None
+        # Set max_cosine_distance to 0.10 as a starting point — it sits in the middle of the gap. If you see ID switches, lower it toward 0.08. If tracks fragment (same turkey gets multiple IDs), raise it toward 0.13.
+        max_cosine_distance = 0.1
+        nn_budget = 100
 
-        encoder_model_filename = 'model_feature_extractor/mars-small128.pb' #'output/frozen_model.pb' #'model_feature_extractor/mars-small128.pb'          #mars-small128.pb  frozen_model.pb
+        encoder_model_filename = 'runs/turkey_reid_v5/best_model.pb' #'model_feature_extractor/mars-small128.pb' #'output/frozen_model.pb' #'model_feature_extractor/mars-small128.pb'          #mars-small128.pb  frozen_model.pb
 
         metric = nn_matching.NearestNeighborDistanceMetric("cosine", max_cosine_distance, nn_budget)
         self.tracker = DeepSortTracker(metric)

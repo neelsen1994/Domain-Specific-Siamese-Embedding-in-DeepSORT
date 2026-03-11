@@ -137,3 +137,5 @@ model_feature_extractor/
 model_obj_detector/
 runs/
 Notes
+*.svg
+*.pdf

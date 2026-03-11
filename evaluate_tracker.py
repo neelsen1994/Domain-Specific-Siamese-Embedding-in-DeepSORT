@@ -61,7 +61,7 @@ def compute_mota(ground_truth_path, tracking_path):
 
 # Specify paths to ground truth and tracking files
 ground_truth_path = '/home/debayansen/projects/AIServicePlatform/services/ai-inference/object-tracker/dnn_tracker_deepsort/TrackEval/data/gt/mot_challenge/Turkey-test/seq3/gt/gt.txt' #'tracking_results/gt.txt'
-tracking_path = '/home/debayansen/projects/AIServicePlatform/services/ai-inference/object-tracker/dnn_tracker_deepsort/TrackEval/data/trackers/mot_challenge/Turkey-test/DeepSORT/data/seq3.txt' #'tracking_results/tracks.txt'
+tracking_path = '/home/debayansen/projects/AIServicePlatform/services/ai-inference/object-tracker/dnn_tracker_deepsort/TrackEval/data/trackers/mot_challenge/Turkey-test/DeepSORT_turkey/data/seq3.txt' #'tracking_results/tracks.txt' 'tracking_results/out_21_seq.txt'
 
 # Run evaluation
 compute_mota(ground_truth_path, tracking_path)

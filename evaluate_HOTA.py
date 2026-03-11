@@ -13,7 +13,7 @@ dataset_config = {
     'GT_FOLDER': 'TrackEval/data/gt/mot_challenge/',
     'TRACKERS_FOLDER': 'TrackEval/data/trackers/mot_challenge/',
     'OUTPUT_FOLDER': None,
-    'TRACKERS_TO_EVAL': [ 'DeepSORT'],     #'DeepSORT', 'ByteTrack', 'DeepSORT_turkey'
+    'TRACKERS_TO_EVAL': [ 'ByteTrack'],     #'DeepSORT', 'ByteTrack', 'DeepSORT_turkey'
     'BENCHMARK': 'Turkey',
     'SPLIT_TO_EVAL': 'test',
     'CLASSES_TO_EVAL': ['pedestrian'],  # name doesn't matter, kept for compatibility

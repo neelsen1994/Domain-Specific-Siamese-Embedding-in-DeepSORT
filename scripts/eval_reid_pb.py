@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
-"""Turkey ReID Evaluation Script
-===================================
-Loads trained weights and computes CMC (rank-1/5/10) and mAP on the
-test (or val) split.  The gallery is built from the same split with a
-leave-one-out strategy: each image is queried against all other images
-in the split.
+"""Turkey ReID Evaluation Script for Frozen .pb Models
+========================================================
+Evaluates a frozen TensorFlow graph (.pb model) on CMC and mAP metrics.
+Works with DeepSORT-style frozen graphs with "images" input and "features" output.
 
 Usage
 -----
-# Evaluate on the test split (default)
-python scripts/eval_reid.py \\
-    --weights  runs/turkey_reid/best_model_keras.h5 \\
+# Evaluate best_model.pb
+python scripts/eval_reid_pb.py \\
+    --model_pb output/best_model.pb \\
     --manifest runs/turkey_reid/split_manifest.json
 
-# Cross-split evaluation: query=test, gallery=train+val
-python scripts/eval_reid.py \\
-    --weights  runs/turkey_reid/best_model_keras.h5 \\
+# Evaluate mars-small128.pb
+python scripts/eval_reid_pb.py \\
+    --model_pb model_feature_extractor/mars-small128.pb \\
     --manifest runs/turkey_reid/split_manifest.json \\
-    --query_split test --gallery_splits train val
-
-# Evaluate on validation split
-python scripts/eval_reid.py \\
-    --weights  runs/turkey_reid/best_model_keras.h5 \\
-    --manifest runs/turkey_reid/split_manifest.json \\
-    --query_split val
+    --show_distances
 """
 from __future__ import annotations
 
@@ -37,7 +29,6 @@ import tensorflow as tf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.dataset import load_split_from_manifest, load_split_as_arrays
-from scripts.model import build_embedding_model
 from scripts.metrics import compute_cmc_map, mean_intra_inter_distance
 
 
@@ -47,11 +38,11 @@ from scripts.metrics import compute_cmc_map, mean_intra_inter_distance
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Evaluate turkey ReID model (CMC + mAP)",
+        description="Evaluate frozen .pb ReID model (CMC + mAP)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--weights",  required=True,
-                   help="Path to Keras .h5 weights file.")
+    p.add_argument("--model_pb", required=True,
+                   help="Path to frozen TensorFlow .pb model.")
     p.add_argument("--manifest", required=True,
                    help="Path to split manifest JSON (from train_reid.py).")
 
@@ -66,9 +57,10 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--image_h",       type=int,   default=128)
     p.add_argument("--image_w",       type=int,   default=64)
-    p.add_argument("--embedding_dim", type=int,   default=128)
-    p.add_argument("--num_filters",   type=int,   default=32)
-    p.add_argument("--dropout",       type=float, default=0.30)
+    p.add_argument("--input_name",    default="images",
+                   help="Input tensor name in the frozen graph.")
+    p.add_argument("--output_name",   default="features",
+                   help="Output tensor name in the frozen graph.")
     p.add_argument("--batch_size",    type=int,   default=64)
     p.add_argument("--ranks",         type=int,   nargs="+", default=[1, 5, 10])
     p.add_argument("--show_distances", action="store_true",
@@ -77,20 +69,68 @@ def parse_args() -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Frozen .pb Model Loading
 # ---------------------------------------------------------------------------
 
-def extract_embeddings(
-    model: tf.keras.Model,
+def load_frozen_pb_model(
+    model_path: str,
+    input_name: str = "images",
+    output_name: str = "features",
+) -> Tuple[tf.compat.v1.Session, tf.Tensor, tf.Tensor]:
+    """Load a frozen TensorFlow graph and return session + input/output tensors.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the .pb file
+    input_name : str
+        Name of the input tensor (without :0)
+    output_name : str
+        Name of the output tensor (without :0)
+
+    Returns
+    -------
+    session : tf.compat.v1.Session
+        TensorFlow session for inference
+    input_tensor : tf.Tensor
+        Input placeholder tensor
+    output_tensor : tf.Tensor
+        Output tensor (embeddings)
+    """
+    graph = tf.Graph()
+    with graph.as_default():
+        with tf.compat.v1.gfile.GFile(model_path, "rb") as f:
+            graph_def = tf.compat.v1.GraphDef()
+            graph_def.ParseFromString(f.read())
+            tf.import_graph_def(graph_def, name="")
+
+        input_tensor = graph.get_tensor_by_name(f"{input_name}:0")
+        output_tensor = graph.get_tensor_by_name(f"{output_name}:0")
+
+    session = tf.compat.v1.Session(graph=graph)
+    return session, input_tensor, output_tensor
+
+
+def extract_embeddings_pb(
+    session: tf.compat.v1.Session,
+    input_tensor: tf.Tensor,
+    output_tensor: tf.Tensor,
     images: np.ndarray,
     batch_size: int = 64,
 ) -> np.ndarray:
-    embs: List[np.ndarray] = []
+    """Extract embeddings using a frozen .pb model."""
+    embs = []
     for i in range(0, len(images), batch_size):
-        batch = tf.constant(images[i: i + batch_size], dtype=tf.float32)
-        embs.append(model(batch, training=False).numpy())
+        batch = images[i: i + batch_size]
+        feed_dict = {input_tensor: batch}
+        batch_embs = session.run(output_tensor, feed_dict=feed_dict)
+        embs.append(batch_embs)
     return np.concatenate(embs, axis=0)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def merge_splits(
     splits: List[Dict[str, List[str]]],
@@ -143,48 +183,24 @@ def main() -> None:
         gal_tag, len(g_imgs), len(set(g_lbls))
     ))
 
-    # ---- Build model + load weights ----
-    # The weights were saved during training with a classification head (num_classes layers).
-    # We need to infer num_classes from the training split to load weights correctly.
-    num_classes = len(train_data)
-
-    # Build the full model (with classification head) to match saved weights structure
-    full_model = build_embedding_model(
-        input_shape=(args.image_h, args.image_w, 3),
-        embedding_dim=args.embedding_dim,
-        num_filters=args.num_filters,
-        dropout_rate=args.dropout,
-        num_classes=num_classes,
+    # ---- Load frozen .pb model ----
+    print("[eval] Loading model from: {}".format(args.model_pb))
+    session, input_tensor, output_tensor = load_frozen_pb_model(
+        args.model_pb,
+        input_name=args.input_name,
+        output_name=args.output_name,
     )
-    full_model.load_weights(args.weights)
-    print("[eval] Weights loaded from: {}".format(args.weights))
-
-    # Build evaluation model (without classification head) and transfer feature layers
-    model = build_embedding_model(
-        input_shape=(args.image_h, args.image_w, 3),
-        embedding_dim=args.embedding_dim,
-        num_filters=args.num_filters,
-        dropout_rate=args.dropout,
-        num_classes=None,
-    )
-
-    # Copy weights from feature layers (skip logits if present)
-    for layer in model.layers:
-        try:
-            src_layer = full_model.get_layer(layer.name)
-            layer.set_weights(src_layer.get_weights())
-        except Exception:
-            pass  # Layer doesn't exist in source model
+    print("[eval] Model loaded successfully")
 
     # ---- Extract embeddings ----
     print("[eval] Extracting query embeddings ...")
-    q_embs = extract_embeddings(model, q_imgs, args.batch_size)
+    q_embs = extract_embeddings_pb(session, input_tensor, output_tensor, q_imgs, args.batch_size)
 
     print("[eval] Extracting gallery embeddings ...")
     if leave_one_out:
         g_embs = q_embs
     else:
-        g_embs = extract_embeddings(model, g_imgs, args.batch_size)
+        g_embs = extract_embeddings_pb(session, input_tensor, output_tensor, g_imgs, args.batch_size)
 
     # Verify norms
     norms = np.linalg.norm(q_embs, axis=1)
@@ -226,6 +242,8 @@ def main() -> None:
         print("  Mean intra-class cosine dist : {:.4f}".format(d_intra))
         print("  Mean inter-class cosine dist : {:.4f}".format(d_inter))
         print("  Separability (inter - intra) : {:.4f}".format(d_inter - d_intra))
+
+    session.close()
 
 
 if __name__ == "__main__":

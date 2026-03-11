@@ -77,7 +77,17 @@ runs/turkey_reid/
 ```bash
 python scripts/eval_reid.py \
     --weights  runs/turkey_reid/best_model_keras.h5 \
-    --manifest runs/turkey_reid/split_manifest.json
+    --manifest runs/turkey_reid/split_manifest.json \
+    --show_distances # optional
+```
+
+Evaluation with .pb model
+
+```bash
+python scripts/eval_reid_pb.py \
+    --model_pb runs/turkey_reid/best_model.pb \
+    --manifest runs/turkey_reid/split_manifest.json \
+    --show_distances # optional
 ```
 
 Cross-split evaluation (query=test, gallery=train+val):
@@ -88,7 +98,13 @@ python scripts/eval_reid.py \
     --manifest runs/turkey_reid/split_manifest.json \
     --query_split test \
     --gallery_splits train val \
-    --show_distances
+    --show_distances # optional
+```
+
+Exhaustive pairwise testing with plots:
+
+```bash
+python feat_vectest_exhaustive_v2.py --pb_path  runs/turkey_reid/best_model.pb --manifest runs/turkey_reid/split_manifest.json --output_dir embruns
 ```
 
 ---

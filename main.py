@@ -16,13 +16,13 @@ from tracker import Tracker
 import time
 
 video_path = os.path.join('.', 'data', 'smooth_best_21.mp4')
-video_out_path = os.path.join('.', 'out.mp4')
+video_out_path = os.path.join('.', 'out_21.mp4')
 speed_video_out_path = os.path.join('.', 'speed_output.mp4')
 trajectory_video_out_path = os.path.join('.', 'trajectory_output.mp4')
 
 # Create directories for saving detections and tracking results
 os.makedirs('tracking_results', exist_ok=True)
-track_output_path = 'tracking_results/sm21_def.txt'
+track_output_path = 'tracking_results/out_sm21_seq.txt'
 
 cap = cv2.VideoCapture(video_path)
 
@@ -59,7 +59,7 @@ with open(track_output_path, 'w') as track_file:
     
     print("Start tracking:")
 
-    while cap.isOpened:
+    while cap.isOpened():
 
         ret, frame = cap.read()
         if not ret:
