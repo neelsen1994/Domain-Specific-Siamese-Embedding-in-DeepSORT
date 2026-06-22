@@ -194,8 +194,8 @@ def draw_pipeline() -> None:
         yc.append(y)
 
     # ── Figure ────────────────────────────────────────────────────────────────
-    y_top_fig = yc[0]  + DEFS[0][4]   / 2 + 1.6   # room for title
-    y_bot_fig = yc[-1] - DEFS[-1][4]  / 2 - 3.4   # room for legend (4 rows × 0.60 + margin)
+    y_top_fig = yc[0]  + DEFS[0][4]   / 2 + 0.35  # no title — small top margin
+    y_bot_fig = yc[-1] - DEFS[-1][4]  / 2 - 0.40  # small bottom margin
     fig_h = (y_top_fig - y_bot_fig) * 0.46         # data→inches scale
     fig, ax = plt.subplots(figsize=(5.5, fig_h))
     ax.set_xlim(0, 11.5)
@@ -220,16 +220,6 @@ def draw_pipeline() -> None:
         y_to   = yc[i + 1] + DEFS[i + 1][4] / 2
         down_arrow(ax, CX, y_from, y_to)
 
-    # ── Title & subtitle ──────────────────────────────────────────────────────
-    ax.text(CX, y_top_fig - 0.30,
-            "Model v5 — Architecture",
-            ha="center", va="top",
-            fontsize=12, fontweight="bold", color="#111111")
-    ax.text(CX, y_top_fig - 0.82,
-            "Pre-Activation ResBlocks  +  SE Attention  +  BNNeck   ≈ 0.71 M parameters",
-            ha="center", va="top",
-            fontsize=8.5, color="#5D6D7E", style="italic")
-
     # ── Dimension column header ───────────────────────────────────────────────
     # Placed to the right of the first block that carries a dim label (index 1)
     hdr_x = CX + BW / 2 + DIM_OFF
@@ -238,46 +228,6 @@ def draw_pipeline() -> None:
             "Feature size\n(H × W × C)",
             ha="left", va="bottom",
             fontsize=7.5, color="#5D6D7E", style="italic")
-
-    # ── Legend ────────────────────────────────────────────────────────────────
-    legend_entries = [
-        ("Input Patch",                    "input"),
-        ("Normalisation  (BN / ÷255)",     "norm"),
-        ("Convolution  +  BN  +  ReLU",    "conv"),
-        ("Max Pooling",                    "pool"),
-        ("Pre-Act ResBlock  +  SE",        "resblk"),
-        ("Global Avg Pool  /  Head",       "gap"),
-        ("Dropout",                        "dropout"),
-        ("FC  +  L2-Norm  (embedding)",    "fc"),
-    ]
-    n_cols   = 2
-    pw, ph   = 0.50, 0.34
-    col_w    = BW / n_cols               # width per legend column
-    lx0      = CX - BW / 2 + 0.10       # left edge aligned with blocks
-    # Legend starts below the last block with a gap
-    ly0      = yc[-1] - DEFS[-1][4] / 2 - 0.70
-
-    # Legend title
-    ax.text(CX, ly0 + 0.15,
-            "Legend",
-            ha="center", va="bottom",
-            fontsize=8.5, fontweight="bold", color="#444444")
-
-    for k, (lbl, kind) in enumerate(legend_entries):
-        row = k // n_cols
-        col = k %  n_cols
-        x_  = lx0 + col * col_w
-        y_  = ly0 - 0.18 - row * 0.58
-        fc, ec = PAL[kind]
-        p = FancyBboxPatch(
-            (x_, y_ - ph / 2), pw, ph,
-            boxstyle="round,pad=0.03",
-            facecolor=fc, edgecolor=ec, linewidth=1.0, zorder=3,
-        )
-        ax.add_patch(p)
-        ax.text(x_ + pw + 0.14, y_, lbl,
-                ha="left", va="center",
-                fontsize=7.5, color="#1A1A1A")
 
     plt.tight_layout(pad=0.3)
     for fmt in ("svg", "pdf", "png"):
@@ -302,16 +252,16 @@ def draw_resblock() -> None:
     SE detail (inset box, below):
       x' ─► GAP ─► FC(C/4, ReLU) ─► FC(C, σ) ─► Reshape ─► ⊗ x' ─► output
     """
-    _, ax = plt.subplots(figsize=(9.5, 4.6))
+    _, ax = plt.subplots(figsize=(9.5, 3.8))
     ax.set_xlim(0, 15.0)
-    ax.set_ylim(0, 9)
+    ax.set_ylim(0, 7.5)
     ax.axis("off")
 
     BH    = 0.72        # block height
     BW_sm = 1.15        # small block (BN, ReLU, Add, SE)
     BW_md = 1.60        # medium block (Conv)
     BW_lg = 1.45        # large block (FC in SE path)
-    Y_MAIN = 6.7        # y-centre of main residual path
+    Y_MAIN = 6.3        # y-centre of main residual path
     Y_SE   = 2.5        # y-centre of SE detail row
 
     # ── Helper ────────────────────────────────────────────────────────────────
@@ -475,16 +425,6 @@ def draw_resblock() -> None:
                                 lw=1.1, mutation_scale=9))
     ax.text(x_se_out + 0.10, Y_SE, "output",
             ha="left", va="center", fontsize=8.5, fontweight="bold")
-
-    # ── Title ─────────────────────────────────────────────────────────────────
-    ax.text(7.5, 8.55,
-            "Pre-Activation Residual Block  +  SE Channel Attention",
-            ha="center", va="center",
-            fontsize=11.5, fontweight="bold", color="#111111")
-    ax.text(7.5, 7.95,
-            "Used in Stage 2  (C = 32 ch)  and  Stage 4  (C = 128 ch)  of Model v5",
-            ha="center", va="center",
-            fontsize=8.5, color="#5D6D7E", style="italic")
 
     plt.tight_layout(pad=0.3)
     for fmt in ("svg", "pdf", "png"):
