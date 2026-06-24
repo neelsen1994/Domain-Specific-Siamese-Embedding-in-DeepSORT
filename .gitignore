@@ -117,6 +117,7 @@ dmypy.json
 *.png
 *.mp4
 *.jpg
+!assets/*.png
 *.swo
 *~
 
