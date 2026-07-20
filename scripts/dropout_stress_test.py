@@ -119,8 +119,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n_seeds", type=int, default=5,
                    help="Repeats per dropout rate (dropout is stochastic; "
                         "report mean +/- std across seeds, not a single draw).")
-    p.add_argument("--max_cosine_distance", type=float, default=0.10,
-                   help="Matches the operating point already used in tracker.py.")
+    p.add_argument("--max_cosine_distances", type=float, nargs="+", default=[0.10],
+                   help="Sweep of association thresholds to test per embedding "
+                        "(default matches the single operating point already used "
+                        "in tracker.py). Cheap to sweep: reuses cached per-frame "
+                        "encoder features, only reruns the tracker/matching step. "
+                        "Use this to check whether a result is a threshold "
+                        "calibration artifact rather than a genuine embedding "
+                        "quality difference -- e.g. --max_cosine_distances "
+                        "0.05 0.08 0.10 0.13 0.15 0.20")
     p.add_argument("--nn_budget", type=int, default=100)
     p.add_argument("--output_csv", default="runs/stress_test/dropout_results.csv")
     p.add_argument("--output_dir", default="runs/stress_test",
@@ -327,44 +334,55 @@ def main() -> None:
             frame_cache = precompute_frame_features(cfg["video"], frame_dets_full, encoder)
 
             for rate in args.dropout_rates:
-                idf1s, motas, idsws = [], [], []
                 n_seeds = 1 if rate == 0.0 else args.n_seeds  # no dropout -> deterministic
 
-                for seed in range(n_seeds):
-                    rng = np.random.default_rng(seed)
+                for threshold in args.max_cosine_distances:
+                    idf1s, motas, idsws = [], [], []
 
-                    hyp_rows = run_tracker_from_cache(
-                        frame_cache, rate, rng,
-                        args.max_cosine_distance, args.nn_budget,
-                    )
-                    m = compute_metrics(cfg["gt"], hyp_rows)
-                    idf1s.append(m["idf1"])
-                    motas.append(m["mota"])
-                    idsws.append(m["num_switches"])
+                    for seed in range(n_seeds):
+                        # Fresh RNG per (rate, threshold, seed): re-seeding here
+                        # (rather than reusing one rng across thresholds) means
+                        # the SAME dropout draw is replayed at every threshold
+                        # for a given seed, isolating the threshold's effect
+                        # instead of confounding it with a different random draw.
+                        rng = np.random.default_rng(seed)
 
-                    tag = "{}_{}_drop{:.0f}_seed{}".format(embed_name, seq_name, rate * 100, seed)
-                    hyp_path = out_dir / "{}.txt".format(tag)
-                    with open(hyp_path, "w") as fh:
-                        for r in hyp_rows:
-                            fh.write("{},{},{:.2f},{:.2f},{:.2f},{:.2f},1,1,1.0\n".format(*r))
+                        hyp_rows = run_tracker_from_cache(
+                            frame_cache, rate, rng,
+                            threshold, args.nn_budget,
+                        )
+                        m = compute_metrics(cfg["gt"], hyp_rows)
+                        idf1s.append(m["idf1"])
+                        motas.append(m["mota"])
+                        idsws.append(m["num_switches"])
 
-                    print("[{}] {} drop={:.0%} seed={} -> IDF1={:.4f} MOTA={:.4f} IDsw={:.0f}".format(
-                        embed_name, seq_name, rate, seed, m["idf1"], m["mota"], m["num_switches"]
+                        tag = "{}_{}_drop{:.0f}_thr{:.2f}_seed{}".format(
+                            embed_name, seq_name, rate * 100, threshold, seed)
+                        hyp_path = out_dir / "{}.txt".format(tag)
+                        with open(hyp_path, "w") as fh:
+                            for r in hyp_rows:
+                                fh.write("{},{},{:.2f},{:.2f},{:.2f},{:.2f},1,1,1.0\n".format(*r))
+
+                        print("[{}] {} drop={:.0%} thr={:.2f} seed={} -> "
+                              "IDF1={:.4f} MOTA={:.4f} IDsw={:.0f}".format(
+                                  embed_name, seq_name, rate, threshold, seed,
+                                  m["idf1"], m["mota"], m["num_switches"]
+                              ))
+
+                    results.append(dict(
+                        embedding=embed_name, sequence=seq_name, dropout_rate=rate,
+                        max_cosine_distance=threshold,
+                        idf1_mean=float(np.mean(idf1s)), idf1_std=float(np.std(idf1s)),
+                        mota_mean=float(np.mean(motas)), mota_std=float(np.std(motas)),
+                        idsw_mean=float(np.mean(idsws)), idsw_std=float(np.std(idsws)),
+                        n_seeds=n_seeds,
                     ))
-
-                results.append(dict(
-                    embedding=embed_name, sequence=seq_name, dropout_rate=rate,
-                    idf1_mean=float(np.mean(idf1s)), idf1_std=float(np.std(idf1s)),
-                    mota_mean=float(np.mean(motas)), mota_std=float(np.std(motas)),
-                    idsw_mean=float(np.mean(idsws)), idsw_std=float(np.std(idsws)),
-                    n_seeds=n_seeds,
-                ))
 
     # ---- Save CSV ----
     import csv
     out_csv = Path(args.output_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["embedding", "sequence", "dropout_rate",
+    fieldnames = ["embedding", "sequence", "dropout_rate", "max_cosine_distance",
                   "idf1_mean", "idf1_std", "mota_mean", "mota_std",
                   "idsw_mean", "idsw_std", "n_seeds"]
     with open(out_csv, "w", newline="") as fh:
@@ -375,16 +393,19 @@ def main() -> None:
 
     # ---- Print summary table aggregated across sequences ----
     print("\n" + "=" * 78)
-    print("  Mean IDF1 across sequences, by embedding x dropout rate")
+    print("  Mean IDF1 across sequences, by embedding x dropout rate x threshold")
     print("=" * 78)
     for embed_name in EMBEDDINGS:
         print("\n{}:".format(embed_name))
-        for rate in args.dropout_rates:
-            rows = [r for r in results if r["embedding"] == embed_name and r["dropout_rate"] == rate]
-            mean_idf1 = np.mean([r["idf1_mean"] for r in rows])
-            mean_idsw = np.mean([r["idsw_mean"] for r in rows])
-            print("  drop={:.0%}: mean IDF1={:.4f}  mean IDsw={:.1f}".format(
-                rate, mean_idf1, mean_idsw))
+        for threshold in args.max_cosine_distances:
+            for rate in args.dropout_rates:
+                rows = [r for r in results if r["embedding"] == embed_name
+                        and r["dropout_rate"] == rate
+                        and r["max_cosine_distance"] == threshold]
+                mean_idf1 = np.mean([r["idf1_mean"] for r in rows])
+                mean_idsw = np.mean([r["idsw_mean"] for r in rows])
+                print("  thr={:.2f} drop={:.0%}: mean IDF1={:.4f}  mean IDsw={:.1f}".format(
+                    threshold, rate, mean_idf1, mean_idsw))
 
 
 if __name__ == "__main__":
