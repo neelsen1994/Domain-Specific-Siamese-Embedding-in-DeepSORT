@@ -148,39 +148,45 @@ def load_gt_as_frame_dets(gt_path: str) -> Dict[int, np.ndarray]:
     return {f: np.array(v, dtype=np.float64) for f, v in frames.items()}
 
 
-def apply_dropout(
-    boxes: np.ndarray, rate: float, rng: np.random.Generator
+def dropout_keep_mask(
+    n: int, rate: float, rng: np.random.Generator
 ) -> np.ndarray:
-    if rate <= 0.0 or len(boxes) == 0:
-        return boxes
-    keep_mask = rng.random(len(boxes)) >= rate
-    return boxes[keep_mask]
+    if rate <= 0.0 or n == 0:
+        return np.ones(n, dtype=bool)
+    return rng.random(n) >= rate
 
 
 # ===========================================================================
 # Tracking
 # ===========================================================================
+#
+# Dropout only ever REMOVES boxes -- it never changes a surviving box's pixels
+# or its embedding. So the encoder only needs to run once per (embedding,
+# sequence) on the full, undropped box set; every dropout draw then just
+# subsets that cache and reruns the (cheap, CPU-only) Kalman+Hungarian
+# tracker logic. Originally this script re-decoded the video and reran the
+# encoder from scratch for every (dropout_rate, seed) pair -- up to 16x
+# redundant work per (embedding, sequence) -- which was the actual source of
+# the slowness, not the accelerator type.
 
-def run_tracker_on_sequence(
+FrameCache = Dict[int, Tuple[np.ndarray, np.ndarray]]  # frame -> (boxes, features)
+
+
+def precompute_frame_features(
     video_path: str,
     frame_dets: Dict[int, np.ndarray],
     encoder,
-    max_cosine_distance: float,
-    nn_budget: int,
-) -> List[Tuple[int, int, float, float, float, float]]:
-    """Run DeepSORT over a video given a fixed dict of per-frame detections
-    (already dropout-applied). Returns MOT-format rows: (frame, id, x,y,w,h).
+) -> FrameCache:
+    """Decode the video once and run the encoder once per frame on the FULL
+    (undropped) box set. Returns {frame: (boxes, features)}, index-aligned so
+    a dropout mask can be applied to both arrays together later without
+    touching the video or the encoder again.
     """
-    metric = nn_matching.NearestNeighborDistanceMetric(
-        "cosine", max_cosine_distance, nn_budget
-    )
-    tracker = DeepSortTracker(metric)
-
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError("Could not open video: {}".format(video_path))
 
-    rows: List[Tuple[int, int, float, float, float, float]] = []
+    cache: FrameCache = {}
     frame_idx = 0
     while cap.isOpened():
         ret, frame = cap.read()
@@ -189,15 +195,54 @@ def run_tracker_on_sequence(
         frame_idx += 1
 
         boxes = frame_dets.get(frame_idx, np.zeros((0, 4)))
+        if len(boxes) == 0:
+            cache[frame_idx] = (boxes, np.zeros((0, 128), dtype=np.float32))
+            continue
+
+        features = encoder(frame, boxes)
+        cache[frame_idx] = (boxes, features)
+
+    cap.release()
+    return cache
+
+
+def run_tracker_from_cache(
+    frame_cache: FrameCache,
+    dropout_rate: float,
+    rng: np.random.Generator,
+    max_cosine_distance: float,
+    nn_budget: int,
+) -> List[Tuple[int, int, float, float, float, float]]:
+    """Run DeepSORT using precomputed per-frame (boxes, features), applying a
+    fresh random dropout mask per frame. No video I/O or encoder calls here --
+    this is the part that's cheap to repeat across dropout rates/seeds.
+    Returns MOT-format rows: (frame, id, x, y, w, h).
+    """
+    metric = nn_matching.NearestNeighborDistanceMetric(
+        "cosine", max_cosine_distance, nn_budget
+    )
+    tracker = DeepSortTracker(metric)
+
+    rows: List[Tuple[int, int, float, float, float, float]] = []
+    for frame_idx in sorted(frame_cache.keys()):
+        boxes, features = frame_cache[frame_idx]
 
         if len(boxes) == 0:
             tracker.predict()
             tracker.update([])
             continue
 
-        features = encoder(frame, boxes)
-        scores = np.ones(len(boxes), dtype=np.float32)
-        dets = [Detection(boxes[i], scores[i], features[i]) for i in range(len(boxes))]
+        keep = dropout_keep_mask(len(boxes), dropout_rate, rng)
+        boxes_k = boxes[keep]
+        features_k = features[keep]
+
+        if len(boxes_k) == 0:
+            tracker.predict()
+            tracker.update([])
+            continue
+
+        scores = np.ones(len(boxes_k), dtype=np.float32)
+        dets = [Detection(boxes_k[i], scores[i], features_k[i]) for i in range(len(boxes_k))]
 
         tracker.predict()
         tracker.update(dets)
@@ -208,7 +253,6 @@ def run_tracker_on_sequence(
             x1, y1, x2, y2 = track.to_tlbr()
             rows.append((frame_idx, track.track_id, x1, y1, x2 - x1, y2 - y1))
 
-    cap.release()
     return rows
 
 
@@ -278,19 +322,19 @@ def main() -> None:
         for seq_name, cfg in SEQUENCES.items():
             frame_dets_full = load_gt_as_frame_dets(cfg["gt"])
 
+            print("[{}] {}: decoding video + running encoder once "
+                  "(reused across all dropout rates/seeds) ...".format(embed_name, seq_name))
+            frame_cache = precompute_frame_features(cfg["video"], frame_dets_full, encoder)
+
             for rate in args.dropout_rates:
                 idf1s, motas, idsws = [], [], []
                 n_seeds = 1 if rate == 0.0 else args.n_seeds  # no dropout -> deterministic
 
                 for seed in range(n_seeds):
                     rng = np.random.default_rng(seed)
-                    dropped = {
-                        f: apply_dropout(boxes, rate, rng)
-                        for f, boxes in frame_dets_full.items()
-                    }
 
-                    hyp_rows = run_tracker_on_sequence(
-                        cfg["video"], dropped, encoder,
+                    hyp_rows = run_tracker_from_cache(
+                        frame_cache, rate, rng,
                         args.max_cosine_distance, args.nn_budget,
                     )
                     m = compute_metrics(cfg["gt"], hyp_rows)
