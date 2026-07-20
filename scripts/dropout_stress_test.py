@@ -114,6 +114,17 @@ def parse_args() -> argparse.Namespace:
         description="Detection-dropout stress test: custom vs baseline embedding",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument("--sequences", type=str, nargs="+", default=None,
+                   choices=list(SEQUENCES.keys()),
+                   help="Subset of sequences to run (default: all). The encoder "
+                        "precompute is the expensive part and scales with total "
+                        "frame count across the selected sequences, so narrowing "
+                        "this is the single biggest speedup available -- e.g. "
+                        "skip seq1 (1117 frames, the largest) if you only need "
+                        "to diagnose a seq2/seq3-specific effect.")
+    p.add_argument("--embeddings", type=str, nargs="+", default=None,
+                   choices=list(EMBEDDINGS.keys()),
+                   help="Subset of embeddings to run (default: both).")
     p.add_argument("--dropout_rates", type=float, nargs="+",
                    default=[0.0, 0.1, 0.2, 0.3])
     p.add_argument("--n_seeds", type=int, default=5,
@@ -318,15 +329,22 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    active_sequences = {k: v for k, v in SEQUENCES.items()
+                         if args.sequences is None or k in args.sequences}
+    active_embeddings = {k: v for k, v in EMBEDDINGS.items()
+                          if args.embeddings is None or k in args.embeddings}
+    print("[dropout_stress_test] Sequences: {} | Embeddings: {}".format(
+        list(active_sequences.keys()), list(active_embeddings.keys())))
+
     results: List[Dict[str, object]] = []
 
-    for embed_name, pb_path in EMBEDDINGS.items():
+    for embed_name, pb_path in active_embeddings.items():
         print("\n" + "#" * 78)
         print("# Embedding: {}  ({})".format(embed_name, pb_path))
         print("#" * 78)
         encoder = gdet.create_box_encoder(pb_path, batch_size=32)
 
-        for seq_name, cfg in SEQUENCES.items():
+        for seq_name, cfg in active_sequences.items():
             frame_dets_full = load_gt_as_frame_dets(cfg["gt"])
 
             print("[{}] {}: decoding video + running encoder once "
@@ -395,7 +413,7 @@ def main() -> None:
     print("\n" + "=" * 78)
     print("  Mean IDF1 across sequences, by embedding x dropout rate x threshold")
     print("=" * 78)
-    for embed_name in EMBEDDINGS:
+    for embed_name in active_embeddings:
         print("\n{}:".format(embed_name))
         for threshold in args.max_cosine_distances:
             for rate in args.dropout_rates:
