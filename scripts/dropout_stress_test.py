@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -140,6 +141,17 @@ def parse_args() -> argparse.Namespace:
                         "quality difference -- e.g. --max_cosine_distances "
                         "0.05 0.08 0.10 0.13 0.15 0.20")
     p.add_argument("--nn_budget", type=int, default=100)
+    p.add_argument("--encoder_batch_size", type=int, default=256,
+                   help="Batch size for the embedding encoder during precompute. "
+                        "TF's compat.v1 Session API has real per-call overhead on "
+                        "CPU; since a typical frame here has far fewer than 256 "
+                        "boxes, most frames now fit in a single encoder call "
+                        "instead of several, directly cutting the number of "
+                        "session.run() calls (the likely dominant cost) rather "
+                        "than the amount of actual computation.")
+    p.add_argument("--progress_every", type=int, default=25,
+                   help="Print precompute progress every N frames (this phase "
+                        "can take minutes with no other output otherwise).")
     p.add_argument("--output_csv", default="runs/stress_test/dropout_results.csv")
     p.add_argument("--output_dir", default="runs/stress_test",
                    help="Where per-run MOT-format hypothesis files are saved.")
@@ -194,15 +206,24 @@ def precompute_frame_features(
     video_path: str,
     frame_dets: Dict[int, np.ndarray],
     encoder,
+    progress_every: int = 25,
 ) -> FrameCache:
     """Decode the video once and run the encoder once per frame on the FULL
     (undropped) box set. Returns {frame: (boxes, features)}, index-aligned so
     a dropout mask can be applied to both arrays together later without
     touching the video or the encoder again.
+
+    Prints periodic progress -- this loop can take several minutes on CPU
+    (roughly one encoder call per frame, and TF's compat.v1 Session API has
+    real per-call overhead), with no other output in between otherwise,
+    which is easy to mistake for a hang.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError("Could not open video: {}".format(video_path))
+
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+    t0 = time.time()
 
     cache: FrameCache = {}
     frame_idx = 0
@@ -215,10 +236,17 @@ def precompute_frame_features(
         boxes = frame_dets.get(frame_idx, np.zeros((0, 4)))
         if len(boxes) == 0:
             cache[frame_idx] = (boxes, np.zeros((0, 128), dtype=np.float32))
-            continue
+        else:
+            features = encoder(frame, boxes)
+            cache[frame_idx] = (boxes, features)
 
-        features = encoder(frame, boxes)
-        cache[frame_idx] = (boxes, features)
+        if frame_idx % progress_every == 0 or frame_idx == total:
+            elapsed = time.time() - t0
+            rate = frame_idx / elapsed if elapsed > 0 else 0.0
+            eta = ((total - frame_idx) / rate) if (total and rate > 0) else float("nan")
+            print("    ... frame {}/{}  ({:.1f}s elapsed, {:.2f} fps, ETA {:.0f}s)".format(
+                frame_idx, total or "?", elapsed, rate, eta
+            ))
 
     cap.release()
     return cache
@@ -342,14 +370,17 @@ def main() -> None:
         print("\n" + "#" * 78)
         print("# Embedding: {}  ({})".format(embed_name, pb_path))
         print("#" * 78)
-        encoder = gdet.create_box_encoder(pb_path, batch_size=32)
+        encoder = gdet.create_box_encoder(pb_path, batch_size=args.encoder_batch_size)
 
         for seq_name, cfg in active_sequences.items():
             frame_dets_full = load_gt_as_frame_dets(cfg["gt"])
 
             print("[{}] {}: decoding video + running encoder once "
                   "(reused across all dropout rates/seeds) ...".format(embed_name, seq_name))
-            frame_cache = precompute_frame_features(cfg["video"], frame_dets_full, encoder)
+            frame_cache = precompute_frame_features(
+                cfg["video"], frame_dets_full, encoder,
+                progress_every=args.progress_every,
+            )
 
             for rate in args.dropout_rates:
                 n_seeds = 1 if rate == 0.0 else args.n_seeds  # no dropout -> deterministic
