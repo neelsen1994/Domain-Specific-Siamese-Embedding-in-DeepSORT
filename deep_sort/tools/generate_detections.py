@@ -72,17 +72,26 @@ class ImageEncoder(object):
 
     def __init__(self, checkpoint_filename, input_name="images",
                  output_name="features"):                           #"Identity" "features"
-        self.session = tf.compat.v1.Session()
-        with tf.compat.v1.gfile.GFile(checkpoint_filename, "rb") as file_handle:
-            graph_def = tf.compat.v1.GraphDef()
-            graph_def.ParseFromString(file_handle.read())
-        # name="" preserves the original node names from the .pb so that
-        # input_name="images" resolves to "images:0" (not "net/images:0").
-        tf.import_graph_def(graph_def, name="")
-        self.input_var = tf.compat.v1.get_default_graph().get_tensor_by_name(
-            "%s:0" % input_name)
-        self.output_var = tf.compat.v1.get_default_graph().get_tensor_by_name(
-            "%s:0" % output_name)
+        # Each instance gets its own isolated graph. Importing into the
+        # shared default graph (the original behaviour here) is only safe
+        # if a single ImageEncoder is ever created per process: a second
+        # instance importing a second .pb with the same node names
+        # ("images", "features", ...) into that same default graph gets
+        # silently auto-renamed by TF on collision (e.g. "features_1"),
+        # while get_tensor_by_name("features:0") keeps resolving to the
+        # FIRST model's tensor -- so a second encoder would silently run
+        # the first model's weights instead of its own.
+        self.graph = tf.Graph()
+        with self.graph.as_default():
+            with tf.compat.v1.gfile.GFile(checkpoint_filename, "rb") as file_handle:
+                graph_def = tf.compat.v1.GraphDef()
+                graph_def.ParseFromString(file_handle.read())
+            # name="" preserves the original node names from the .pb so that
+            # input_name="images" resolves to "images:0" (not "net/images:0").
+            tf.import_graph_def(graph_def, name="")
+            self.input_var = self.graph.get_tensor_by_name("%s:0" % input_name)
+            self.output_var = self.graph.get_tensor_by_name("%s:0" % output_name)
+        self.session = tf.compat.v1.Session(graph=self.graph)
 
         assert len(self.output_var.get_shape()) == 2
         assert len(self.input_var.get_shape()) == 4
