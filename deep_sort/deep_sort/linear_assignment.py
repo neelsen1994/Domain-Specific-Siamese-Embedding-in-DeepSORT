@@ -1,8 +1,21 @@
 # vim: expandtab:ts=4:sw=4
 from __future__ import absolute_import
 import numpy as np
-from sklearn.utils.linear_assignment_ import linear_assignment
+from scipy.optimize import linear_sum_assignment
 from . import kalman_filter
+
+
+def linear_assignment(cost_matrix):
+    """Drop-in replacement for the removed sklearn.utils.linear_assignment_.
+
+    scipy.optimize.linear_sum_assignment solves the same Hungarian-algorithm
+    assignment problem but returns (row_ind, col_ind) as two 1-D arrays
+    instead of a single (K, 2) array of pairs; the rest of this module
+    indexes the old two-column format directly (indices[:, 0], indices[:, 1]),
+    so we reshape to match rather than touching every call site.
+    """
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    return np.column_stack((row_ind, col_ind))
 
 
 INFTY_COST = 1e+5
