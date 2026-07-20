@@ -58,6 +58,15 @@ from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
+
+# motmetrics (as of the versions available on PyPI at the time of writing)
+# still calls the long-removed np.asfarray internally (distances.py). NumPy
+# >=2.0 dropped it entirely, so patch it back in before importing motmetrics
+# rather than downgrading NumPy globally, which would risk breaking whatever
+# else in the Colab image is built against the NumPy 2.x ABI.
+if not hasattr(np, "asfarray"):
+    np.asfarray = lambda a, dtype=float: np.asarray(a, dtype=dtype)
+
 import motmetrics as mm
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
