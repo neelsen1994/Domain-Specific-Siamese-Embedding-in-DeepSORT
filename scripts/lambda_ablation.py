@@ -136,7 +136,12 @@ def main() -> None:
         print("# {}".format(tag))
         print("#" * 78)
 
-        if not args.skip_training:
+        already_trained = (run_dir / "best_model.pb").exists()
+        if already_trained:
+            print("[lambda_ablation] {} already has best_model.pb -- skipping "
+                  "training and reusing the existing run.".format(tag))
+
+        if not args.skip_training and not already_trained:
             cmd = [
                 sys.executable, "scripts/train_reid_v2.py",
                 "--arch", "v5",
@@ -166,12 +171,17 @@ def main() -> None:
         if not manifest_for_eval.exists():
             manifest_for_eval = reference_manifest
 
-        weights_path = run_dir / "best_model_keras.h5"
         pb_path = run_dir / "best_model.pb"
 
+        # NOTE: scripts/eval_reid.py always instantiates the V1 architecture
+        # internally (no --arch flag) and will fail with a "layer count
+        # mismatch" when loading V5 weights. scripts/eval_reid_pb.py evaluates
+        # directly from the exported frozen .pb graph instead, which is
+        # architecture-agnostic (same approach feat_vectest_exhaustive_v2.py
+        # already uses below) and sidesteps the issue entirely.
         eval_stdout = run([
-            sys.executable, "scripts/eval_reid.py",
-            "--weights", str(weights_path),
+            sys.executable, "scripts/eval_reid_pb.py",
+            "--model_pb", str(pb_path),
             "--manifest", str(manifest_for_eval),
         ])
         row: Dict[str, float] = {"lambda": lam}
